@@ -1,0 +1,15 @@
+# Build output (redirected to %LOCALAPPDATA% via Directory.Build.props)
+bin/
+obj/
+
+# Visual Studio user-specific files
+*.user
+*.suo
+.vs/
+
+# Rider
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store
