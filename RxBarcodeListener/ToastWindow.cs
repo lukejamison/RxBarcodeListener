@@ -65,7 +65,7 @@ public class ToastWindow : Form
     private void BuildLayout()
     {
         // Warning header
-        AddLabel("⚠️  DO NOT CHARGE — NimbleRx Paid Order",
+        AddLabel($"⚠️  DO NOT CHARGE — NimbleRx {_result.TaskTypeLabel}",
             x: 20, y: 16, width: 440, height: 26, fontSize: 13, bold: true,
             color: Color.FromArgb(255, 80, 80));
 

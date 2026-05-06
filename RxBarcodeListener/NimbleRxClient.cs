@@ -5,10 +5,17 @@ namespace RxBarcodeListener;
 /// <summary>
 /// Wraps the NimbleRx task search API.
 ///
-/// Endpoint: GET /v2/tasks/search?statuses=Q&amp;query={rxNumber}
+/// Endpoint: GET /tasks/search?limit=100&amp;prescriptionNumber={rxNumber}
 /// Auth: Bearer token in Authorization header
 ///
-/// Returns null if no paid delivery order exists for this Rx number.
+/// Response shape:
+///   { buckets: [ { taskSummaries: [ { id, type, status, dueTs, completedTs, ... } ] } ] }
+///
+/// We alert only when a task matches ALL of:
+///   1. type is "PO" (pharmacy order) or "DO" (delivery order) — not "F" (fill)
+///   2. completedTs is null — the task has not been completed yet
+///
+/// Returns null if no matching active delivery task exists for this Rx number.
 /// Throws on network/HTTP errors so the caller can capture them via Sentry.
 /// </summary>
 public static class NimbleRxClient
@@ -30,7 +37,7 @@ public static class NimbleRxClient
 
     public static async Task<NimbleRxResult?> LookupAsync(string rxNumber)
     {
-        var url = $"/v2/tasks/search?statuses=Q&query={Uri.EscapeDataString(rxNumber)}";
+        var url = $"/tasks/search?limit=100&prescriptionNumber={Uri.EscapeDataString(rxNumber)}";
         var response = await Http.GetAsync(url);
 
         if (!response.IsSuccessStatusCode)
@@ -40,26 +47,48 @@ public static class NimbleRxClient
         }
 
         var json = await response.Content.ReadAsStringAsync();
-        var array = JArray.Parse(json);
+        Logger.Log($"NimbleRx response for Rx {rxNumber}: {json}");
 
-        if (!array.Any()) return null;
+        var root = JObject.Parse(json);
 
-        // Find the first task where isPaid = true
-        // Must use Value<bool?>() — Value<bool>() throws if the field is JSON null
-        var paidTask = array.FirstOrDefault(t => t["isPaid"]?.Value<bool?>() == true);
-        if (paidTask == null) return null;
+        // Flatten taskSummaries from all buckets into a single list
+        var allTasks = root["buckets"]
+            ?.SelectMany(b => b["taskSummaries"] ?? Enumerable.Empty<JToken>())
+            .ToList() ?? [];
 
-        var firstName = paidTask["patientName"]?["firstName"]?.Value<string>() ?? "";
-        var lastName  = paidTask["patientName"]?["lastName"]?.Value<string>()  ?? "";
-        var dueByDate = paidTask["dueByDate"]?.Value<DateTime?>() ?? null;
-        var taskId    = paidTask["id"]?.Value<string>() ?? "";
+        Logger.Log($"Rx {rxNumber} — {allTasks.Count} total task(s) across all buckets");
+
+        // Find the first active delivery/pickup task:
+        //   type "PO" = pharmacy pickup order, "DO" = delivery order
+        //   completedTs null = not yet completed
+        var activeTask = allTasks.FirstOrDefault(t =>
+        {
+            var type        = t["type"]?.Value<string>() ?? "";
+            var completedTs = t["completedTs"]?.Value<string>();
+            return (type == "PO" || type == "DO") && string.IsNullOrEmpty(completedTs);
+        });
+
+        if (activeTask == null)
+        {
+            Logger.Log($"Rx {rxNumber} — no active PO/DO task found");
+            return null;
+        }
+
+        var firstName = activeTask["patientFirstName"]?.Value<string>() ?? "";
+        var lastName  = activeTask["patientLastName"]?.Value<string>()  ?? "";
+        var dueTs     = activeTask["dueTs"]?.Value<DateTime?>();
+        var taskId    = activeTask["id"]?.Value<string>() ?? "";
+        var taskType  = activeTask["type"]?.Value<string>() ?? "";
+
+        Logger.Log($"Rx {rxNumber} — active {taskType} task {taskId} for {firstName} {lastName}, due {dueTs}");
 
         return new NimbleRxResult
         {
             RxNumber    = rxNumber,
             PatientName = $"{firstName} {lastName}".Trim(),
-            DueByDate   = dueByDate,
+            DueByDate   = dueTs,
             TaskId      = taskId,
+            TaskType    = taskType,
             TaskUrl     = Config.NimbleRxTaskUrlTemplate.Replace("{taskId}", taskId)
         };
     }
@@ -71,7 +100,15 @@ public class NimbleRxResult
     public string    PatientName { get; set; } = "";
     public DateTime? DueByDate   { get; set; }
     public string    TaskId      { get; set; } = "";
+    public string    TaskType    { get; set; } = "";   // "PO" = pickup, "DO" = delivery
     public string    TaskUrl     { get; set; } = "";
+
+    public string TaskTypeLabel => TaskType switch
+    {
+        "DO" => "Delivery Order",
+        "PO" => "Pickup Order",
+        _    => TaskType
+    };
 
     /// <summary>
     /// Human-readable due time relative to now.
