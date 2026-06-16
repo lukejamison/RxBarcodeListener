@@ -24,7 +24,7 @@ public static class NimbleRxClient
     private static readonly HttpClient Http = new()
     {
         BaseAddress = new Uri(Config.NimbleRxBaseUrl),
-        Timeout = TimeSpan.FromSeconds(10)
+        Timeout = TimeSpan.FromSeconds(30)
     };
 
     static NimbleRxClient()
