@@ -150,31 +150,57 @@ public class TrayApp : ApplicationContext
 
     /// <summary>
     /// Called from a Task.Run() thread (not the UI thread).
+    /// Both API lookups are fired in parallel to minimise total wait time.
     /// All UI work must be marshalled via _uiInvoker.Invoke().
     /// </summary>
     private void OnBarcodeDetected(string rxNumber)
     {
         Logger.Log($"Barcode matched — Rx: {rxNumber}");
 
+        // Start both lookups immediately so they run concurrently.
+        var nimbleTask  = NimbleRxClient.LookupAsync(rxNumber);
+        var pioneerTask = PioneerRxClient.LookupAsync(rxNumber);
+
+        // --- NimbleRx result ---
+        NimbleRxResult? nimbleResult = null;
         try
         {
-            // Run the async lookup synchronously on the thread-pool thread
-            var result = NimbleRxClient.LookupAsync(rxNumber).GetAwaiter().GetResult();
-
-            if (result == null)
-            {
-                Logger.Log($"Rx {rxNumber} — no paid NimbleRx order found");
-                return;
-            }
-
-            Logger.Log($"Rx {rxNumber} — paid order found for {result.PatientName}, due {result.DueByDate}");
-
-            // Marshal to the UI thread for toast creation
-            _uiInvoker.Invoke(() => ToastWindow.ShowToast(result));
+            nimbleResult = nimbleTask.GetAwaiter().GetResult();
         }
         catch (Exception ex)
         {
             Logger.LogError($"NimbleRx lookup failed for Rx {rxNumber}", ex);
+        }
+
+        if (nimbleResult != null)
+        {
+            Logger.Log($"Rx {rxNumber} — paid NimbleRx order found for {nimbleResult.PatientName}, due {nimbleResult.DueByDate}");
+            _uiInvoker.Invoke(() => ToastWindow.ShowToast(nimbleResult));
+        }
+        else
+        {
+            Logger.Log($"Rx {rxNumber} — no paid NimbleRx order found");
+        }
+
+        // --- PioneerRx / California Medicaid result ---
+        PioneerRxResult? pioneerResult = null;
+        try
+        {
+            pioneerResult = pioneerTask.GetAwaiter().GetResult();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError($"PioneerRx lookup failed for Rx {rxNumber}", ex);
+        }
+
+        if (pioneerResult != null)
+        {
+            Logger.Log($"Rx {rxNumber} — California Medicaid billing detected for {pioneerResult.PatientName}");
+            _uiInvoker.Invoke(() => ToastWindow.ShowThirdPartyToast(pioneerResult));
+        }
+        else
+        {
+            Logger.Log($"Rx {rxNumber} — no California Medicaid billing detected");
         }
     }
 

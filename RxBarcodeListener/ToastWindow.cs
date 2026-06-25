@@ -1,49 +1,75 @@
 namespace RxBarcodeListener;
 
 /// <summary>
-/// Custom toast notification window.
+/// Custom toast notification window. Handles two alert types:
 ///
-/// Design:
-/// - Dark background (#1a1a2e)
-/// - Always on top, no taskbar entry, no caption bar
-/// - Bottom-LEFT corner with 20px margin from the working area
+///   1. NimbleRx alert  — fires when a paid PO/DO order exists in NimbleRx.
+///      Shown at the bottom-left corner (20px margin).
+///
+///   2. California Medicaid alert — fires when PioneerRx reports lastPayMethod
+///      matches "California Medicaid". Shown directly above the NimbleRx slot
+///      so both can be visible simultaneously without overlapping.
+///
+/// Shared design:
+/// - Dark background (#1a1a2e), always on top, no taskbar entry, no caption bar
 /// - Auto-dismisses after Config.ToastDurationMs milliseconds
-/// - "Open in NimbleRx" button launches via Chrome --app flag so it opens
-///   inside the installed NimbleRx PWA rather than a regular browser tab
-/// - Click anywhere else on the toast to dismiss
-///
-/// Size: 480 x 265px
+/// - Click anywhere to dismiss
 /// </summary>
 public class ToastWindow : Form
 {
-    private readonly NimbleRxResult _result;
+    private readonly NimbleRxResult?   _result;
+    private readonly PioneerRxResult?  _thirdPartyResult;
     private System.Windows.Forms.Timer _dismissTimer = null!;
 
-    // Track the active toast so a new scan replaces it instead of stacking
-    private static ToastWindow? _current;
+    // Separate trackers so each alert type manages its own lifecycle independently.
+    private static ToastWindow? _current;             // NimbleRx alert
+    private static ToastWindow? _currentThirdParty;   // California Medicaid alert
 
-    public ToastWindow(NimbleRxResult result)
+    private const int NimbleToastHeight     = 265;
+    private const int ThirdPartyToastHeight = 210;
+
+    private ToastWindow(NimbleRxResult result)
     {
         _result = result;
-        SetupWindow();
-        BuildLayout();
+        SetupWindow(NimbleToastHeight, isThirdParty: false);
+        BuildNimbleLayout();
+        StartDismissTimer();
+    }
+
+    private ToastWindow(PioneerRxResult result)
+    {
+        _thirdPartyResult = result;
+        SetupWindow(ThirdPartyToastHeight, isThirdParty: true);
+        BuildThirdPartyLayout();
         StartDismissTimer();
     }
 
     /// <summary>
-    /// Show a toast, closing any previous one still on screen.
+    /// Show a NimbleRx toast, closing any previous NimbleRx toast still on screen.
     /// Must be called on the UI thread.
     /// </summary>
     public static void ShowToast(NimbleRxResult result)
     {
         _current?.Close();
-
         var toast = new ToastWindow(result);
         _current = toast;
         toast.Show();
     }
 
-    private void SetupWindow()
+    /// <summary>
+    /// Show a California Medicaid toast, closing any previous third-party toast still on screen.
+    /// Positioned above the NimbleRx slot so both can show simultaneously.
+    /// Must be called on the UI thread.
+    /// </summary>
+    public static void ShowThirdPartyToast(PioneerRxResult result)
+    {
+        _currentThirdParty?.Close();
+        var toast = new ToastWindow(result);
+        _currentThirdParty = toast;
+        toast.Show();
+    }
+
+    private void SetupWindow(int height, bool isThirdParty)
     {
         FormBorderStyle = FormBorderStyle.None;
         TopMost         = true;
@@ -52,20 +78,24 @@ public class ToastWindow : Form
         BackColor       = Color.FromArgb(26, 26, 46); // #1a1a2e
 
         Width  = 480;
-        Height = 265;
+        Height = height;
 
-        // Position: bottom-LEFT corner, above the taskbar
         var screen = Screen.PrimaryScreen!.WorkingArea;
-        Left = screen.Left   + 20;
-        Top  = screen.Bottom - Height - 20;
+        Left = screen.Left + 20;
+
+        // NimbleRx toast sits at the very bottom-left.
+        // California Medicaid toast sits directly above that slot so they don't overlap.
+        Top = isThirdParty
+            ? screen.Bottom - NimbleToastHeight - height - 30
+            : screen.Bottom - height - 20;
 
         Click += (_, _) => Close();
     }
 
-    private void BuildLayout()
+    private void BuildNimbleLayout()
     {
         // Warning header
-        AddLabel($"⚠️  DO NOT CHARGE — NimbleRx {_result.TaskTypeLabel}",
+        AddLabel($"⚠️  DO NOT CHARGE — NimbleRx {_result!.TaskTypeLabel}",
             x: 20, y: 16, width: 440, height: 26, fontSize: 13, bold: true,
             color: Color.FromArgb(255, 80, 80));
 
@@ -120,6 +150,39 @@ public class ToastWindow : Form
         // Dismiss hint
         AddLabel("Click anywhere to dismiss",
             x: 20, y: 238, width: 440, height: 18, fontSize: 9,
+            color: Color.FromArgb(80, 80, 80));
+    }
+
+    private void BuildThirdPartyLayout()
+    {
+        // Warning header
+        AddLabel("⚠️  DO NOT CHARGE SERVICE FEE",
+            x: 20, y: 16, width: 440, height: 26, fontSize: 13, bold: true,
+            color: Color.FromArgb(255, 80, 80));
+
+        // Pay method badge
+        AddLabel($"Billed via: {_thirdPartyResult!.LastPayMethod}",
+            x: 20, y: 46, width: 440, height: 20, fontSize: 11,
+            color: Color.FromArgb(170, 170, 170));
+
+        // Patient name
+        AddLabel(_thirdPartyResult.PatientName,
+            x: 20, y: 68, width: 440, height: 56, fontSize: 20, bold: true,
+            color: Color.White);
+
+        // Instruction
+        AddLabel("No service fee or admin fee for this prescription.",
+            x: 20, y: 126, width: 440, height: 22, fontSize: 12,
+            color: Color.FromArgb(240, 165, 0));
+
+        // Rx number
+        AddLabel($"Rx #{_thirdPartyResult.RxNumber}",
+            x: 20, y: 152, width: 440, height: 20, fontSize: 11,
+            color: Color.FromArgb(170, 170, 170));
+
+        // Dismiss hint
+        AddLabel("Click anywhere to dismiss",
+            x: 20, y: 182, width: 440, height: 18, fontSize: 9,
             color: Color.FromArgb(80, 80, 80));
     }
 
@@ -197,7 +260,8 @@ public class ToastWindow : Form
     {
         _dismissTimer?.Stop();
         _dismissTimer?.Dispose();
-        if (_current == this) _current = null;
+        if (_current == this)             _current = null;
+        if (_currentThirdParty == this)   _currentThirdParty = null;
         base.OnFormClosed(e);
     }
 }

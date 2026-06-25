@@ -12,6 +12,19 @@ public static class Config
     public const string NimbleRxTaskUrlTemplate = "https://admin.nimblerx.com/admin/pharmacyDashboard/{taskId}";
     // https://admin.nimblerx.com/admin/pharmacyDashboard/Tas-xoZ1k6ZLBz5
 
+    // PioneerRx API — third-party pay-method lookup
+    // Base URL for the internal PioneerRx enterprise API server
+    public const string PioneerRxBaseUrl = "https://172.18.129.10";
+    // Static API key sent as the prx-api-key header on every request
+    public const string PioneerRxApiKey = "EZK+DWTVDD";
+    // Shared secret used to sign each request: Base64(SHA-512(UTF-16LE(timestamp + secret)))
+    // *** REPLACE with your actual PioneerRx shared secret ***
+    public const string PioneerRxSharedSecret = "4WF$@5J4J3";
+    // Employee ID sent as RequestedByEmployeeID in every API call
+    public const string PioneerRxEmployeeId = "LJ";
+    // The pay-method string that triggers the "no service fee" alert (case-insensitive contains)
+    public const string CaliforniaMedicaidPayMethod = "California Medicaid";
+
     // PioneerRx window filter — fire only when these strings appear in the active window title
     public static readonly string[] PioneerRxScreens =
     [
