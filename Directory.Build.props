@@ -1,0 +1,12 @@
+<Project>
+  <!--
+    Redirects build output outside Google Drive so the Drive sync client
+    cannot hold memory-mapped file locks that block incremental builds.
+    This file is evaluated before Microsoft.Common.props, which is required
+    for BaseIntermediateOutputPath to take effect correctly.
+  -->
+  <PropertyGroup>
+    <BaseIntermediateOutputPath>$(LOCALAPPDATA)\RxBarcodeListener-build\obj\</BaseIntermediateOutputPath>
+    <BaseOutputPath>$(LOCALAPPDATA)\RxBarcodeListener-build\bin\</BaseOutputPath>
+  </PropertyGroup>
+</Project>
