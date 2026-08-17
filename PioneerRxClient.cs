@@ -7,7 +7,7 @@ namespace RxBarcodeListener;
 
 /// <summary>
 /// Checks the PioneerRx enterprise API to see whether a prescription's last billing
-/// method was "California Medicaid" (or any other value in AppSettings.CaliforniaMedicaidPayMethod).
+/// method was "California Medicaid" (or any other value in Config.CaliforniaMedicaidPayMethod).
 ///
 /// Three-step chain per lookup:
 ///   1. RxIDSearch    — Rx number   → rxID
@@ -15,7 +15,7 @@ namespace RxBarcodeListener;
 ///   3. GetPatientProfile — personID → full profile; filter by rxID, read lastPayMethod
 ///
 /// Auth: every request requires three headers —
-///   prx-api-key   : static key from AppSettings (loaded via .env)
+///   prx-api-key   : static key from Config (loaded via .env)
 ///   prx-timestamp : yyyy-MM-ddTHH:mm:ss.ffffffZ  (UTC, microsecond precision)
 ///   prx-signature : Base64( SHA-512( UTF-16LE( timestamp + sharedSecret ) ) )
 ///
@@ -40,12 +40,12 @@ public static class PioneerRxClient
 
         Http = new HttpClient(handler)
         {
-            BaseAddress = new Uri(AppSettings.PioneerRxBaseUrl),
+            BaseAddress = new Uri(Config.PioneerRxBaseUrl),
             Timeout     = TimeSpan.FromSeconds(30)
         };
 
         Http.DefaultRequestHeaders.Add("Accept",      "application/json");
-        Http.DefaultRequestHeaders.Add("prx-api-key", AppSettings.PioneerRxApiKey);
+        Http.DefaultRequestHeaders.Add("prx-api-key", Config.PioneerRxApiKey);
     }
 
     /// <summary>
@@ -76,8 +76,10 @@ public static class PioneerRxClient
 
     /// <summary>
     /// Full chain: Rx number → rxID → rxTransactionIDLatestComplete → acquisitionCost/totalPricePaid.
-    /// Returns a <see cref="RxMarginResult"/> only when (totalPricePaid - acquisitionCost)
-    /// exceeds <see cref="AppSettings.MarginFeeThreshold"/>.
+    /// Returns a <see cref="RxMarginResult"/> only when the fill was underpaid — i.e.
+    /// (acquisitionCost - totalPricePaid) is positive — by more than
+    /// <see cref="Config.MarginFeeThreshold"/>. A profitable/break-even fill never
+    /// returns a result, regardless of how large the overpayment is.
     /// </summary>
     public static async Task<RxMarginResult?> CheckMarginAsync(string rxNumber)
     {
@@ -205,31 +207,36 @@ public static class PioneerRxClient
     /// <summary>
     /// Shared margin decision logic for both the single-Rx and bag-derived lookup paths.
     ///
-    /// margin = totalPricePaid - acquisitionCost can be positive (we collected more than
-    /// the drug cost — overpaid, e.g. by a third party) or negative (we collected less
-    /// than the drug cost — underpaid/a loss, e.g. an insurance reimbursement that didn't
-    /// cover acquisition). Either direction can be a real dollar mismatch that needs a
-    /// balancing line item in the sale, so we compare/inject on the ABSOLUTE VALUE of the
-    /// margin, not the signed value — a $11.29 underpayment triggers the fee exactly like
-    /// a $11.29 overpayment would.
+    /// margin = totalPricePaid - acquisitionCost. A SOC (shortfall/service) fee only ever
+    /// makes sense when the pharmacy is UNDERPAID — collected less than the drug cost to
+    /// acquire it (margin is negative) — since the fee exists to cover that gap. A
+    /// positive margin means the fill was profitable/break-even and needs no adjustment
+    /// at all, regardless of how large the gap is; a large overpayment is a good outcome,
+    /// not something to flag or charge a fee for. Only the underpaid direction is ever
+    /// compared against the threshold or turned into a fee.
     /// </summary>
     private static RxMarginResult? EvaluateMargin(string label, decimal acquisitionCost, decimal totalPricePaid)
     {
-        var margin    = totalPricePaid - acquisitionCost;
-        var absMargin = Math.Abs(margin);
-        var direction = margin >= 0 ? "overpaid (collected more than acquisition cost)"
-                                     : "underpaid (collected less than acquisition cost)";
+        var margin      = totalPricePaid - acquisitionCost;
+        var isUnderpaid = margin < 0;
+        var shortfall   = Math.Abs(margin);
 
         Logger.Log($"PioneerRx — {label}: acquisitionCost={acquisitionCost:0.00}, totalPricePaid={totalPricePaid:0.00}, " +
-                   $"margin={margin:0.00} [{direction}], |margin|={absMargin:0.00}, threshold=${AppSettings.MarginFeeThreshold:0.00}");
+                   $"margin={margin:0.00} [{(isUnderpaid ? "underpaid (collected less than acquisition cost)" : "overpaid/break-even (collected at or above acquisition cost)")}]");
 
-        if (absMargin <= AppSettings.MarginFeeThreshold)
+        if (!isUnderpaid)
         {
-            Logger.Log($"{label} — |margin| ${absMargin:0.00} at or below threshold ${AppSettings.MarginFeeThreshold:0.00} — no fee line needed");
+            Logger.Log($"{label} — collected at or above acquisition cost — no SOC fee needed (a profitable/break-even fill is never fee-eligible)");
             return null;
         }
 
-        Logger.Log($"{label} — |margin| ${absMargin:0.00} exceeds threshold ${AppSettings.MarginFeeThreshold:0.00} — fee amount to inject: ${absMargin:0.00}");
+        if (shortfall <= Config.MarginFeeThreshold)
+        {
+            Logger.Log($"{label} — shortfall ${shortfall:0.00} at or below threshold ${Config.MarginFeeThreshold:0.00} — no fee line needed");
+            return null;
+        }
+
+        Logger.Log($"{label} — shortfall ${shortfall:0.00} exceeds threshold ${Config.MarginFeeThreshold:0.00} — SOC fee to inject: ${shortfall:0.00}");
 
         return new RxMarginResult
         {
@@ -237,7 +244,7 @@ public static class PioneerRxClient
             AcquisitionCost = acquisitionCost,
             TotalPricePaid  = totalPricePaid,
             Margin          = margin,
-            FeeAmount       = absMargin
+            FeeAmount       = shortfall
         };
     }
 
@@ -270,7 +277,7 @@ public static class PioneerRxClient
 
         Logger.Log($"PioneerRx — Rx {rxNumber}: lastPayMethod='{lastPayMethod}', patient='{patientName}'");
 
-        if (!lastPayMethod.Contains(AppSettings.CaliforniaMedicaidPayMethod, StringComparison.OrdinalIgnoreCase))
+        if (!lastPayMethod.Contains(Config.CaliforniaMedicaidPayMethod, StringComparison.OrdinalIgnoreCase))
             return null;
 
         return new PioneerRxResult
@@ -318,7 +325,7 @@ public static class PioneerRxClient
     {
         var paramList = new List<object>
         {
-            new { Name = "RequestedByEmployeeID", Value = AppSettings.PioneerRxEmployeeId }
+            new { Name = "RequestedByEmployeeID", Value = Config.PioneerRxEmployeeId }
         };
 
         foreach (var (name, value) in extraParams)
@@ -352,7 +359,7 @@ public static class PioneerRxClient
     /// </summary>
     private static string ComputeSignature(string timestamp)
     {
-        var salted = timestamp + AppSettings.PioneerRxSharedSecret;
+        var salted = timestamp + Config.PioneerRxSharedSecret;
         var bytes  = Encoding.Unicode.GetBytes(salted); // UTF-16LE, no BOM
         var hash   = SHA512.HashData(bytes);
         return Convert.ToBase64String(hash);
@@ -372,11 +379,12 @@ public class RxMarginResult
     public decimal AcquisitionCost { get; set; }
     public decimal TotalPricePaid  { get; set; }
 
-    /// <summary>Signed value: totalPricePaid - acquisitionCost. Positive = overpaid, negative = underpaid.</summary>
+    /// <summary>
+    /// Signed value: totalPricePaid - acquisitionCost. Always negative — EvaluateMargin
+    /// only ever returns a non-null result for underpaid (shortfall) fills.
+    /// </summary>
     public decimal Margin          { get; set; }
 
-    /// <summary>Absolute value of Margin — this is the actual dollar amount injected as the fee line.</summary>
+    /// <summary>Absolute value of Margin — the shortfall amount injected as the SOC fee line.</summary>
     public decimal FeeAmount       { get; set; }
-
-    public bool IsOverpaid => Margin >= 0;
 }

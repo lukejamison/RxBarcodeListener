@@ -7,52 +7,59 @@ static class Program
     [STAThread]
     static void Main()
     {
-        try
-        {
-            AppSettings.Load();
-        }
-        catch (Exception ex)
+        if (string.IsNullOrWhiteSpace(Config.NimbleRxBearerToken) ||
+            Config.NimbleRxBearerToken == "REPLACE_ME" ||
+            string.IsNullOrWhiteSpace(Config.PioneerRxApiKey) ||
+            Config.PioneerRxApiKey == "REPLACE_ME")
         {
             MessageBox.Show(
-                $"Failed to load configuration:\n\n{ex.Message}\n\n" +
-                "Make sure a .env file exists next to the exe or in the project root.\n" +
-                "Copy .env.example to .env and fill in your values.",
-                "RxBarcodeListener — Configuration Error",
+                "Config.cs is missing real values.\n\n" +
+                "Copy Config.example.cs to Config.cs, fill in your keys, then rebuild.",
+                "RxBarcodeListener — Config Error",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
             return;
         }
 
-        // Initialize Sentry FIRST, before anything else — Logger.LogError() forwards to
-        // Sentry, and SingleInstance/Installer below can both hit error paths during
-        // startup. Any Sentry init done later would silently drop those early errors
-        // (SentrySdk.CaptureException is a no-op before Init runs).
-        using var _ = SentrySdk.Init(options =>
-        {
-            options.Dsn = AppSettings.SentryDsn;
-            options.Environment = "production";
-            options.TracesSampleRate = 0;        // No performance tracing needed
-            options.AutoSessionTracking = false;
-        });
-
-        // Initialize logging next so SingleInstance/Installer actions below get recorded.
         Logger.Initialize();
 
-        // Always terminate any other running copy before doing anything else — covers
-        // manual re-launches during testing as well as installs/updates.
+        if (string.IsNullOrWhiteSpace(Config.SentryDsn) || Config.SentryDsn == "REPLACE_ME")
+        {
+            Logger.Log("Sentry: DSN not configured — error reporting is DISABLED");
+        }
+        else
+        {
+            Logger.Log($"Sentry: initializing (project host: {new Uri(Config.SentryDsn).Host})");
+        }
+
+        using var _ = SentrySdk.Init(options =>
+        {
+            options.Dsn = Config.SentryDsn;
+            options.Environment = "production";
+            options.TracesSampleRate = 0;
+            options.AutoSessionTracking = false;
+            options.Release = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString();
+            // Route the SDK's own internal diagnostics into our log file instead of the
+            // console (which nobody sees on a tray app) — makes DSN/network problems
+            // visible in the same log a user would send via "Send Report to Developer".
+            options.Debug = true;
+            options.DiagnosticLevel = SentryLevel.Warning;
+            options.DiagnosticLogger = new SentryLogger();
+        });
+
+        Logger.Log("Sentry: SDK initialized");
         SingleInstance.KillOtherInstances();
 
+        // Must be set before any window handles are created (and before EnableVisualStyles)
+        // so labels/buttons/forms scale correctly on non-100% displays instead of blurring
+        // or clipping — this app has no manifest-level DPI declaration, so it defaults to
+        // system-DPI-aware without this call.
+        Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
 
-        // If not running from the install location, offer to install and exit
         if (Installer.CheckAndInstall()) return;
 
-        // Safety nets: by default an unhandled exception on ANY thread (including the
-        // background Task.Run threads used for barcode lookups) silently kills the whole
-        // process — no dialog, no log line. These handlers make sure every unhandled
-        // exception is at least logged/reported before we go down, and keep the app
-        // alive whenever the runtime allows it (UI-thread exceptions).
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
         Application.ThreadException += (_, e) =>
             Logger.LogError("Unhandled UI-thread exception (app kept running)", e.Exception);
@@ -68,7 +75,6 @@ static class Program
             e.SetObserved();
         };
 
-        // Run as ApplicationContext — no main window, tray only
         Application.Run(new TrayApp());
     }
 }

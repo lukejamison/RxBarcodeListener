@@ -23,13 +23,13 @@ public static class NimbleRxClient
     // Single shared HttpClient — never create per-request instances (socket exhaustion)
     private static readonly HttpClient Http = new()
     {
-        BaseAddress = new Uri(AppSettings.NimbleRxBaseUrl),
+        BaseAddress = new Uri(Config.NimbleRxBaseUrl),
         Timeout = TimeSpan.FromSeconds(30)
     };
 
     static NimbleRxClient()
     {
-        Http.DefaultRequestHeaders.Add("Authorization", $"Bearer {AppSettings.NimbleRxBearerToken}");
+        Http.DefaultRequestHeaders.Add("Authorization", $"Bearer {Config.NimbleRxBearerToken}");
         Http.DefaultRequestHeaders.Add("Accept", "application/json");
         Http.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
         Http.DefaultRequestHeaders.Add("Origin", "https://admin.nimblerx.com");
@@ -89,7 +89,7 @@ public static class NimbleRxClient
             DueByDate   = dueTs,
             TaskId      = taskId,
             TaskType    = taskType,
-            TaskUrl     = AppSettings.NimbleRxTaskUrlTemplate.Replace("{taskId}", taskId)
+            TaskUrl     = Config.NimbleRxTaskUrlTemplate.Replace("{taskId}", taskId)
         };
     }
 }

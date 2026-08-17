@@ -22,10 +22,10 @@ public class BarcodeProcessor
     private static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
 
     private static readonly Regex BarcodeRegex =
-        new(AppSettings.BarcodePattern, RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        new(Config.BarcodePattern, RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private static readonly Regex BagBarcodeRegex =
-        new(AppSettings.BagBarcodePattern, RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        new(Config.BagBarcodePattern, RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     /// <summary>
     /// When true, skip the PioneerRx window check so any window works.
@@ -49,7 +49,7 @@ public class BarcodeProcessor
         var now = DateTime.UtcNow;
 
         // Reset buffer if there has been too long a gap since the last keystroke
-        if ((now - _lastKeyTime).TotalMilliseconds > AppSettings.BufferTimeoutMs)
+        if ((now - _lastKeyTime).TotalMilliseconds > Config.BufferTimeoutMs)
             _buffer = "";
 
         _lastKeyTime = now;
@@ -99,7 +99,7 @@ public class BarcodeProcessor
         var kind = isBag ? "Bag" : "Rx";
 
         var windowTitle = GetForegroundWindowTitle();
-        var pioneerActive = TestModeEnabled || AppSettings.PioneerRxScreens.Any(screen =>
+        var pioneerActive = TestModeEnabled || Config.PioneerRxScreens.Any(screen =>
             windowTitle.Contains(screen, StringComparison.OrdinalIgnoreCase));
 
         if (!pioneerActive)

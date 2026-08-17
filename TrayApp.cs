@@ -15,6 +15,19 @@ namespace RxBarcodeListener;
 /// </summary>
 public class TrayApp : ApplicationContext
 {
+    // Set once the constructor finishes, so other components (DiagnosticsWindow, Updater)
+    // that need to trigger a clean shutdown — not just Application.Exit() — can reach it
+    // without threading a reference through every call site.
+    public static TrayApp? Current { get; private set; }
+
+    // Loaded once and shared by the tray icon AND every window that wants the app icon
+    // (e.g. DiagnosticsWindow), instead of decoding the embedded .ico repeatedly.
+    // Lives for the process lifetime; disposed in Shutdown().
+    public static Icon AppIcon { get; } = LoadAppIcon();
+
+    // Reused instead of allocating a new bold Font every time an update is found.
+    private static readonly Font UpdateMenuFont = new(SystemFonts.MenuFont!, FontStyle.Bold);
+
     private NotifyIcon _trayIcon = null!;
     private KeyboardHook _hook = null!;
     private BarcodeProcessor _processor = null!;
@@ -33,9 +46,11 @@ public class TrayApp : ApplicationContext
         // Logger.Initialize() already ran in Program.Main() before this constructor — don't
         // call it again here (it would just write a second "=== started ===" header).
         Logger.Log("RxBarcodeListener starting up");
+        Logger.Log($"Update server: {Config.UpdateBaseUrl}");
 
         InitializeTrayIcon();
         InitializeHook();
+        Current = this;
 
         // When the machine wakes from sleep, Windows invalidates low-level keyboard hooks.
         // We catch PowerModes.Resume and reinstall the hook automatically.
@@ -56,11 +71,14 @@ public class TrayApp : ApplicationContext
     {
         _trayIcon = new NotifyIcon
         {
-            Icon    = LoadAppIcon(),
+            Icon    = AppIcon,
             Text    = "RxBarcodeListener — Running",
             Visible = true,
             ContextMenuStrip = BuildContextMenu()
         };
+        // Double-click is the conventional way to open a tray app's main window —
+        // saves a right-click for anyone who doesn't know the menu is there.
+        _trayIcon.DoubleClick += (_, _) => DiagnosticsWindow.ShowOrFocus();
     }
 
     private static string GetTitleWithVersion()
@@ -77,10 +95,10 @@ public class TrayApp : ApplicationContext
         // Falls back to the default application icon if something goes wrong.
         try
         {
-            var stream = typeof(TrayApp).Assembly
+            using var stream = typeof(TrayApp).Assembly
                 .GetManifestResourceStream("RxBarcodeListener.app.ico");
             if (stream != null)
-                return new Icon(stream);
+                return new Icon(stream); // Icon(Stream) copies the data eagerly — safe to dispose the stream right after.
         }
         catch (Exception ex)
         {
@@ -111,6 +129,7 @@ public class TrayApp : ApplicationContext
         menu.Items.Add(socItem);
 
         menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("Diagnostics...", null, (s, e) => DiagnosticsWindow.ShowOrFocus());
         menu.Items.Add("Reload Hook",    null, (s, e) => ReloadHook());
         menu.Items.Add("Open Log File",  null, (s, e) => Logger.OpenLogFile());
         menu.Items.Add(new ToolStripSeparator());
@@ -145,7 +164,7 @@ public class TrayApp : ApplicationContext
         menu.Items.Add(debugItem);
 
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("Exit", null, (s, e) => ExitApp());
+        menu.Items.Add("Exit", null, (s, e) => Shutdown());
 
         return menu;
     }
@@ -256,11 +275,10 @@ public class TrayApp : ApplicationContext
 
         if (marginResult != null)
         {
-            var direction = marginResult.IsOverpaid ? "overpaid" : "underpaid";
-            Logger.Log($"Rx {rxNumber} — injecting fee line: UPC {AppSettings.MarginFeeUpc} + ${marginResult.FeeAmount:0.00} " +
-                       $"(sale was {direction} by that amount)");
+            Logger.Log($"Rx {rxNumber} — injecting SOC fee line: UPC {Config.MarginFeeUpc} + ${marginResult.FeeAmount:0.00} " +
+                       $"(sale was underpaid by that amount)");
 
-            InputInjector.InjectFeeLine(focusedWindow, AppSettings.MarginFeeUpc, marginResult.FeeAmount);
+            InputInjector.InjectFeeLine(focusedWindow, Config.MarginFeeUpc, marginResult.FeeAmount);
             InvokeSafely(() => ToastWindow.ShowMarginFeeToast(marginResult));
         }
         // (PioneerRxClient.EvaluateMargin already logs the acquisitionCost/totalPricePaid/margin
@@ -305,8 +323,11 @@ public class TrayApp : ApplicationContext
 
         Logger.Log($"Bag {bagCode} — checking margin for {rxTransactionIds.Count} rxTransactionID(s)");
 
+        var injectionCount = 0;
         foreach (var rxTransactionId in rxTransactionIds)
         {
+            Logger.Log($"Bag {bagCode} — margin check for rxTransactionID {rxTransactionId}");
+
             RxMarginResult? marginResult;
             try
             {
@@ -324,13 +345,19 @@ public class TrayApp : ApplicationContext
                 continue;
             }
 
-            var direction = marginResult.IsOverpaid ? "overpaid" : "underpaid";
-            Logger.Log($"Bag {bagCode} — {marginResult.RxNumber}: injecting fee line: UPC {AppSettings.MarginFeeUpc} + " +
-                       $"${marginResult.FeeAmount:0.00} (sale was {direction} by that amount)");
+            Logger.Log($"Bag {bagCode} — {marginResult.RxNumber}: injecting SOC fee line: UPC {Config.MarginFeeUpc} + " +
+                       $"${marginResult.FeeAmount:0.00} (sale was underpaid by that amount)");
 
-            InputInjector.InjectFeeLine(focusedWindow, AppSettings.MarginFeeUpc, marginResult.FeeAmount);
+            InputInjector.InjectFeeLine(focusedWindow, Config.MarginFeeUpc, marginResult.FeeAmount);
             InvokeSafely(() => ToastWindow.ShowMarginFeeToast(marginResult));
+            injectionCount++;
+
+            // Give PioneerRx POS time to finish the previous line before the next injection.
+            if (injectionCount < rxTransactionIds.Count)
+                Thread.Sleep(600);
         }
+
+        Logger.Log($"Bag {bagCode} — finished: checked {rxTransactionIds.Count} rxTransactionID(s), injected {injectionCount} fee line(s)");
     }
 
     /// <summary>
@@ -368,8 +395,8 @@ public class TrayApp : ApplicationContext
         {
             var updateItem = new ToolStripMenuItem($"Install Update (v{update.VersionString})")
             {
-                ForeColor = Color.FromArgb(0, 160, 120),
-                Font      = new Font(SystemFonts.MenuFont!, FontStyle.Bold)
+                ForeColor = UiTheme.AccentGreen,
+                Font      = UpdateMenuFont
             };
             updateItem.Click += (_, _) =>
             {
@@ -395,12 +422,23 @@ public class TrayApp : ApplicationContext
         });
     }
 
-    private void ExitApp()
+    /// <summary>
+    /// Tears down the hook, tray icon, and shared app icon, then exits the message loop.
+    /// This is the ONLY correct way to end the process — calling Application.Exit()
+    /// directly (as the update installer and manual-restart flow used to) skips hiding
+    /// the tray icon, which leaves a stale/ghost icon in the notification area until the
+    /// user hovers over it. Public so DiagnosticsWindow and Updater can route through it
+    /// via <see cref="Current"/> instead of duplicating the cleanup or bypassing it.
+    /// </summary>
+    public void Shutdown()
     {
         Logger.Log("Application exiting");
         _hook?.Uninstall();
         SystemEvents.PowerModeChanged -= OnPowerModeChanged;
         _trayIcon.Visible = false;
+        _trayIcon.Dispose();
+        if (!ReferenceEquals(AppIcon, SystemIcons.Application))
+            AppIcon.Dispose();
         _uiInvoker.Dispose();
         Application.Exit();
     }

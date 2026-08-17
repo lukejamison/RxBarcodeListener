@@ -77,7 +77,6 @@ static class Installer
         }
 
         File.Copy(CurrentExe, InstallExe, overwrite: true);
-        CopyEnvFileIfPresent();
         RegisterScheduledTask();
 
         // Launch from the install location
@@ -93,21 +92,6 @@ static class Installer
             "RxBarcodeListener \u2014 Installed",
             MessageBoxButtons.OK,
             MessageBoxIcon.Information);
-    }
-
-    /// <summary>
-    /// Copies .env from next to the running exe into the install folder so production
-    /// installs pick up secrets without embedding them in the published binary.
-    /// </summary>
-    private static void CopyEnvFileIfPresent()
-    {
-        var sourceDir = Path.GetDirectoryName(CurrentExe);
-        if (string.IsNullOrEmpty(sourceDir)) return;
-
-        var sourceEnv = Path.Combine(sourceDir, ".env");
-        if (!File.Exists(sourceEnv)) return;
-
-        File.Copy(sourceEnv, Path.Combine(InstallDir, ".env"), overwrite: true);
     }
 
     private static void RegisterScheduledTask()

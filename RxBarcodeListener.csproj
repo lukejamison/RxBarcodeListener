@@ -12,9 +12,9 @@
     <RootNamespace>RxBarcodeListener</RootNamespace>
     <Company>Luke Jamison</Company>
     <Authors>Luke Jamison</Authors>
-    <Version>1.0.5</Version>
-    <AssemblyVersion>1.0.5.0</AssemblyVersion>
-    <FileVersion>1.0.5.0</FileVersion>
+    <Version>1.0.9</Version>
+    <AssemblyVersion>1.0.9.0</AssemblyVersion>
+    <FileVersion>1.0.9.0</FileVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -26,13 +26,10 @@
     <EmbeddedResource Include="app.ico" />
   </ItemGroup>
 
-  <!-- Dev builds: copy .env into output so dotnet run finds it. Never published to GitHub. -->
-  <ItemGroup Condition="'$(Configuration)' == 'Debug' And Exists('.env')">
-    <None Include=".env" CopyToOutputDirectory="PreserveNewest" Link=".env" />
-  </ItemGroup>
-
+  <!-- Template only — real secrets live in gitignored Config.cs -->
   <ItemGroup>
-    <None Include=".env.example" CopyToOutputDirectory="Never" />
+    <Compile Remove="Config.example.cs" />
+    <None Include="Config.example.cs" />
   </ItemGroup>
 
 </Project>

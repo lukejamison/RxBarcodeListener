@@ -10,13 +10,14 @@ namespace RxBarcodeListener;
 ///      matches "California Medicaid". Shown directly above the NimbleRx slot
 ///      so both can be visible simultaneously without overlapping.
 ///
-///   3. Margin fee alert — fires when a fee line was auto-injected because
-///      (totalPricePaid - acquisitionCost) exceeded AppSettings.MarginFeeThreshold.
-///      Shown at the bottom-right corner so it never overlaps the other two.
+///   3. SOC fee alert — fires when a fee line was auto-injected because the fill was
+///      underpaid (acquisitionCost - totalPricePaid) by more than Config.MarginFeeThreshold.
+///      Never fires for a profitable/break-even fill. Shown at the bottom-right corner
+///      so it never overlaps the other two.
 ///
 /// Shared design:
 /// - Dark background (#1a1a2e), always on top, no taskbar entry, no caption bar
-/// - Auto-dismisses after AppSettings.ToastDurationMs milliseconds
+/// - Auto-dismisses after Config.ToastDurationMs milliseconds
 /// - Click anywhere to dismiss
 /// </summary>
 public class ToastWindow : Form
@@ -105,12 +106,17 @@ public class ToastWindow : Form
         TopMost         = true;
         ShowInTaskbar   = false;
         StartPosition   = FormStartPosition.Manual; // Required — without this WinForms ignores Left/Top
-        BackColor       = Color.FromArgb(26, 26, 46); // #1a1a2e
+        AutoScaleMode   = AutoScaleMode.Dpi;
+        BackColor       = UiTheme.Background;
 
         Width  = 480;
         Height = height;
 
-        var screen = Screen.PrimaryScreen!.WorkingArea;
+        // Use the monitor the cursor is currently on rather than always the primary display —
+        // on a multi-monitor POS setup the cashier's active screen (where the mouse/POS
+        // software is) isn't necessarily Windows' "primary" monitor, and a toast on an
+        // unwatched screen is as good as no toast at all.
+        var screen = Screen.FromPoint(Cursor.Position).WorkingArea;
 
         if (kind == ToastKind.MarginFee)
         {
@@ -137,12 +143,12 @@ public class ToastWindow : Form
         // Warning header
         AddLabel($"⚠️  DO NOT CHARGE — NimbleRx {_result!.TaskTypeLabel}",
             x: 20, y: 16, width: 440, height: 26, fontSize: 13, bold: true,
-            color: Color.FromArgb(255, 80, 80));
+            color: UiTheme.AccentDanger);
 
         // Rx number
         AddLabel($"Rx #{_result.RxNumber}",
             x: 20, y: 46, width: 440, height: 20, fontSize: 11,
-            color: Color.FromArgb(170, 170, 170));
+            color: UiTheme.TextMuted);
 
         // Patient name — taller to handle long names that may wrap to 2 lines
         AddLabel(_result.PatientName,
@@ -152,7 +158,7 @@ public class ToastWindow : Form
         // Instruction
         AddLabel("Cancel this sale and check the NimbleRx dashboard.",
             x: 20, y: 126, width: 440, height: 22, fontSize: 12,
-            color: Color.FromArgb(240, 165, 0));
+            color: UiTheme.AccentAmber);
 
         // Due label
         if (!string.IsNullOrEmpty(_result.DueLabel))
@@ -190,7 +196,7 @@ public class ToastWindow : Form
         // Dismiss hint
         AddLabel("Click anywhere to dismiss",
             x: 20, y: 238, width: 440, height: 18, fontSize: 9,
-            color: Color.FromArgb(80, 80, 80));
+            color: UiTheme.TextDim);
     }
 
     private void BuildThirdPartyLayout()
@@ -198,12 +204,12 @@ public class ToastWindow : Form
         // Warning header
         AddLabel("⚠️  DO NOT CHARGE SERVICE FEE",
             x: 20, y: 16, width: 440, height: 26, fontSize: 13, bold: true,
-            color: Color.FromArgb(255, 80, 80));
+            color: UiTheme.AccentDanger);
 
         // Pay method badge
         AddLabel($"Billed via: {_thirdPartyResult!.LastPayMethod}",
             x: 20, y: 46, width: 440, height: 20, fontSize: 11,
-            color: Color.FromArgb(170, 170, 170));
+            color: UiTheme.TextMuted);
 
         // Patient name
         AddLabel(_thirdPartyResult.PatientName,
@@ -213,54 +219,51 @@ public class ToastWindow : Form
         // Instruction
         AddLabel("No service fee or admin fee for this prescription.",
             x: 20, y: 126, width: 440, height: 22, fontSize: 12,
-            color: Color.FromArgb(240, 165, 0));
+            color: UiTheme.AccentAmber);
 
         // Rx number
         AddLabel($"Rx #{_thirdPartyResult.RxNumber}",
             x: 20, y: 152, width: 440, height: 20, fontSize: 11,
-            color: Color.FromArgb(170, 170, 170));
+            color: UiTheme.TextMuted);
 
         // Dismiss hint
         AddLabel("Click anywhere to dismiss",
             x: 20, y: 182, width: 440, height: 18, fontSize: 9,
-            color: Color.FromArgb(80, 80, 80));
+            color: UiTheme.TextDim);
     }
 
     private void BuildMarginFeeLayout()
     {
-        var overpaid = _marginResult!.IsOverpaid;
-
-        // Header — wording differs depending on which way the mismatch went.
-        AddLabel(overpaid ? "💰  Service Fee Added" : "⚠️  Loss Adjustment Added",
+        // A margin-fee toast only ever fires for an underpaid (shortfall) fill —
+        // EvaluateMargin never returns a result for a profitable/break-even one.
+        AddLabel("⚠️  SOC Fee Added",
             x: 20, y: 16, width: 440, height: 26, fontSize: 13, bold: true,
-            color: overpaid ? Color.FromArgb(0, 200, 150) : Color.FromArgb(230, 90, 60));
+            color: Color.FromArgb(230, 90, 60));
 
         // Rx number
-        AddLabel($"Rx #{_marginResult.RxNumber}",
+        AddLabel($"Rx #{_marginResult!.RxNumber}",
             x: 20, y: 46, width: 440, height: 20, fontSize: 11,
-            color: Color.FromArgb(170, 170, 170));
+            color: UiTheme.TextMuted);
 
-        // Fee amount — the big number (always the absolute dollar amount injected)
+        // Fee amount — the big number (the shortfall dollar amount injected)
         AddLabel($"${_marginResult.FeeAmount:0.00}",
             x: 20, y: 68, width: 440, height: 56, fontSize: 28, bold: true,
             color: Color.White);
 
-        // Breakdown — shows which number was bigger so it's clear why this fired
-        AddLabel(overpaid
-                ? $"Paid ${_marginResult.TotalPricePaid:0.00} \u2212 Acquisition ${_marginResult.AcquisitionCost:0.00}"
-                : $"Acquisition ${_marginResult.AcquisitionCost:0.00} \u2212 Paid ${_marginResult.TotalPricePaid:0.00}",
+        // Breakdown — shows why this fired: acquisition cost exceeded what was paid
+        AddLabel($"Acquisition ${_marginResult.AcquisitionCost:0.00} \u2212 Paid ${_marginResult.TotalPricePaid:0.00}",
             x: 20, y: 128, width: 440, height: 22, fontSize: 12,
-            color: Color.FromArgb(240, 165, 0));
+            color: UiTheme.AccentAmber);
 
         // UPC that was injected
-        AddLabel($"UPC {AppSettings.MarginFeeUpc} scanned into sale",
+        AddLabel($"UPC {Config.MarginFeeUpc} scanned into sale",
             x: 20, y: 152, width: 440, height: 20, fontSize: 11,
-            color: Color.FromArgb(170, 170, 170));
+            color: UiTheme.TextMuted);
 
         // Dismiss hint
         AddLabel("Click anywhere to dismiss",
             x: 20, y: 182, width: 440, height: 18, fontSize: 9,
-            color: Color.FromArgb(80, 80, 80));
+            color: UiTheme.TextDim);
     }
 
     /// <summary>
@@ -324,7 +327,7 @@ public class ToastWindow : Form
 
     private void StartDismissTimer()
     {
-        _dismissTimer = new System.Windows.Forms.Timer { Interval = AppSettings.ToastDurationMs };
+        _dismissTimer = new System.Windows.Forms.Timer { Interval = Config.ToastDurationMs };
         _dismissTimer.Tick += (_, _) =>
         {
             _dismissTimer.Stop();

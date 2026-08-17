@@ -5,63 +5,35 @@ using Newtonsoft.Json.Linq;
 namespace RxBarcodeListener;
 
 /// <summary>
-/// Wraps PioneerRx's mobile Inventory app API ("Will Call" endpoints), used only to
-/// resolve a scanned Will Call bag barcode into the rxTransactionIDs it contains.
-///
-/// This is a different auth scheme than <see cref="PioneerRxClient"/>'s Enterprise API:
-///   1. POST /inventory/validate-pin — logs in with a dedicated service PIN, returns a
-///      SecurityToken (cached and reused for every subsequent call).
-///   2. POST /inventory/will-call/add-item — scans a bag/Rx barcode using that
-///      SecurityToken; response includes rxTransactionIDsInBag.
-///
-/// NOTE: The exact field name/casing of the SecurityToken in the validate-pin response
-/// has not been confirmed against a real captured response yet (only the add-item
-/// request/response shapes were confirmed via Postman). ValidatePinAsync logs the full
-/// raw response and tries the most likely field name variants — if login keeps failing,
-/// check the log for the raw JSON and adjust the field lookups below.
+/// Resolves a Will Call bag barcode into rxTransactionIDs via the Inventory mobile API.
+/// Uses a static SecurityToken from .env (same shape as the Inventory app curl).
 /// </summary>
 public static class WillCallClient
 {
     private static readonly HttpClient Http;
-    private static readonly object _tokenLock = new();
-    private static JObject? _securityToken; // Cached after first successful login
-
-    // Fixed identifier for our "virtual device" — generated once, not tied to a real phone.
-    private const string MobileDeviceId = "8f5a4b3e-2a1f-4b7a-9e60-8b6d6f9c2a3d";
+    private static readonly Lazy<JObject> SecurityToken = new(BuildSecurityToken);
 
     static WillCallClient()
     {
         var handler = new HttpClientHandler
         {
-            // Same self-signed cert as the Enterprise API server.
             ServerCertificateCustomValidationCallback =
                 HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
         };
 
         Http = new HttpClient(handler)
         {
-            BaseAddress = new Uri(AppSettings.WillCallBaseUrl),
+            BaseAddress = new Uri(Config.WillCallBaseUrl),
             Timeout     = TimeSpan.FromSeconds(15)
         };
     }
 
-    /// <summary>
-    /// Scans the given Will Call bag barcode and returns the rxTransactionIDs bagged
-    /// together under it, or null if the lookup failed.
-    /// </summary>
     public static Task<List<string>?> GetRxTransactionIdsInBagAsync(string bagBarcode) =>
-        AddItemAsync(bagBarcode, retryAfterReauth: true);
+        AddItemAsync(bagBarcode);
 
-    private static async Task<List<string>?> AddItemAsync(string itemOrBinValue, bool retryAfterReauth)
+    private static async Task<List<string>?> AddItemAsync(string itemOrBinValue)
     {
-        JObject? token;
-        lock (_tokenLock) token = _securityToken;
-
-        if (token == null)
-        {
-            token = await ValidatePinAsync();
-            if (token == null) return null;
-        }
+        var token = SecurityToken.Value;
 
         var body = new JObject
         {
@@ -73,99 +45,91 @@ public static class WillCallClient
         };
 
         using var request = new HttpRequestMessage(HttpMethod.Post, "/inventory/will-call/add-item");
-        request.Content = new StringContent(body.ToString(), Encoding.UTF8, "application/json");
-        AddCommonHeaders(request, token);
+        request.Content = new StringContent(body.ToString(Formatting.None), Encoding.UTF8, "application/json");
+        AddCommonHeaders(request);
 
         var response = await Http.SendAsync(request);
-
-        if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized && retryAfterReauth)
-        {
-            Logger.Log("WillCall add-item returned 401 — re-authenticating and retrying once");
-            lock (_tokenLock) _securityToken = null;
-            return await AddItemAsync(itemOrBinValue, retryAfterReauth: false);
-        }
+        var json = await response.Content.ReadAsStringAsync();
 
         if (!response.IsSuccessStatusCode)
         {
-            Logger.Log($"WillCall add-item returned {(int)response.StatusCode} for '{itemOrBinValue}'");
+            Logger.Log($"WillCall add-item returned {(int)response.StatusCode} for '{itemOrBinValue}': {json}");
+            if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+                Logger.Log("WillCall token rejected — update WillCallEncryptedToken in .env / .Environment");
             return null;
         }
 
-        var json = await response.Content.ReadAsStringAsync();
-        var ids = JObject.Parse(json)["scannedItem"]?["rxTransactionIDsInBag"]?
-            .Select(t => t.Value<string>()!)
-            .ToList();
+        var ids = ParseRxTransactionIdsInBag(json);
 
-        Logger.Log($"WillCall add-item — '{itemOrBinValue}' → {ids?.Count ?? 0} rxTransactionID(s) in bag");
+        if (ids.Count == 0)
+            Logger.Log($"WillCall add-item — '{itemOrBinValue}' returned no rxTransactionIDsInBag. Raw response: {json}");
+        else
+            Logger.Log($"WillCall add-item — '{itemOrBinValue}' → {ids.Count} rxTransactionID(s): {string.Join(", ", ids)}");
+
         return ids;
     }
 
-    private static async Task<JObject?> ValidatePinAsync()
+    private static List<string> ParseRxTransactionIdsInBag(string json)
     {
-        var body = new
+        var root = JObject.Parse(json);
+        var bagIdsToken =
+            root.SelectToken("scannedItem.rxTransactionIDsInBag")
+         ?? root.SelectToken("scannedItem.RxTransactionIDsInBag")
+         ?? root.SelectToken("rxTransactionIDsInBag")
+         ?? root.SelectToken("RxTransactionIDsInBag");
+
+        if (bagIdsToken == null)
+            return [];
+
+        IEnumerable<JToken> entries = bagIdsToken.Type switch
         {
-            LocationID = AppSettings.WillCallLocationId,
-            Pin        = AppSettings.WillCallServicePin,
-            sharedKey  = AppSettings.WillCallSharedKey,
-            MobileDeviceApplication = new
-            {
-                MobileDevice        = (object?)null,
-                ApplicationID       = AppSettings.WillCallApplicationId,
-                ApplicationVersion  = (string?)null
-            }
+            JTokenType.Array  => bagIdsToken.Children(),
+            JTokenType.String => [bagIdsToken],
+            _                 => []
         };
 
-        using var request = new HttpRequestMessage(HttpMethod.Post, "/inventory/validate-pin");
-        request.Content = new StringContent(JsonConvert.SerializeObject(body), Encoding.UTF8, "application/json");
-        AddCommonHeaders(request, securityToken: null);
-
-        var response = await Http.SendAsync(request);
-        var json = await response.Content.ReadAsStringAsync();
-
-        if (!response.IsSuccessStatusCode)
-        {
-            Logger.Log($"WillCall validate-pin returned {(int)response.StatusCode}: {json}");
-            return null;
-        }
-
-        Logger.Log($"WillCall validate-pin raw response: {json}");
-
-        var root = JObject.Parse(json);
-        var token = root["SecurityToken"] as JObject
-                 ?? root["securityToken"] as JObject
-                 ?? root; // Some PioneerRx mobile endpoints return the token fields at the root
-
-        var hasEncryptedToken = token["EncryptedToken"] != null || token["encryptedToken"] != null;
-        if (!hasEncryptedToken)
-        {
-            Logger.LogError(
-                "WillCall validate-pin — could not find EncryptedToken in response; field mapping " +
-                "needs to be corrected once a real response is confirmed (see raw response in log above)",
-                new InvalidOperationException(json));
-            return null;
-        }
-
-        lock (_tokenLock) _securityToken = token;
-        return token;
+        return entries
+            .Select(t => t.Type == JTokenType.String ? t.Value<string>() : t.ToString())
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Select(id => id!.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
-    private static void AddCommonHeaders(HttpRequestMessage request, JObject? securityToken)
+    private static JObject BuildSecurityToken() => new()
     {
-        request.Headers.Add("portal-authLocationID", AppSettings.WillCallLocationId);
-        request.Headers.Add("portal-applicationID", AppSettings.WillCallApplicationId);
-        request.Headers.Add("portal-mobileDeviceID", MobileDeviceId);
-        request.Headers.Add("portal-deviceUniqueIdentifier", MobileDeviceId);
-        request.Headers.Add("portal-platformType", "0");
-        request.Headers.Add("Accept", "application/json");
+        ["PersonID"]       = Config.WillCallPersonId,
+        ["EncryptedToken"] = Config.WillCallEncryptedToken,
+        ["LocationID"]     = Config.WillCallLocationId,
+        ["MobileDeviceApplication"] = new JObject
+        {
+            ["MobileDevice"]    = new JObject(),
+            ["ApplicationID"] = Config.WillCallApplicationId
+        }
+    };
 
-        var personId = securityToken?["PersonID"]?.Value<string>()
-                    ?? securityToken?["personID"]?.Value<string>();
-        var encryptedToken = securityToken?["EncryptedToken"]?.Value<string>()
-                          ?? securityToken?["encryptedToken"]?.Value<string>();
+    private static void AddCommonHeaders(HttpRequestMessage request)
+    {
+        TryAddHeader(request, "portal-authLocationID", Config.WillCallAuthLocationId);
+        TryAddHeader(request, "portal-applicationID", Config.WillCallApplicationId);
+        TryAddHeader(request, "portal-mobileDeviceID", Config.WillCallMobileDeviceId);
+        TryAddHeader(request, "portal-deviceUniqueIdentifier", Config.WillCallMobileDeviceId);
+        TryAddHeader(request, "portal-personID", Config.WillCallPersonId);
+        TryAddHeader(request, "portal-securityToken", Config.WillCallEncryptedToken);
+        TryAddHeader(request, "portal-platformType", "0");
+        TryAddHeader(request, "portal-applicationVersion", Config.WillCallApplicationVersion);
+        TryAddHeader(request, "portal-screenScale", "1");
+        TryAddHeader(request, "portal-deviceFamily", "0");
+        TryAddHeader(request, "portal-deviceName", Config.WillCallDeviceName);
+        TryAddHeader(request, "portal-deviceModel", Config.WillCallDeviceModel);
+        TryAddHeader(request, "portal-deviceSystemName", Config.WillCallDeviceSystemName);
+        TryAddHeader(request, "portal-deviceSystemVersion", Config.WillCallDeviceSystemVersion);
+        TryAddHeader(request, "Accept", "application/json");
+    }
 
-        if (personId != null)
-            request.Headers.Add("portal-personID", personId);
-        if (encryptedToken != null)
-            request.Headers.Add("portal-securityToken", encryptedToken);
+    private static void TryAddHeader(HttpRequestMessage request, string name, string value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || request.Headers.Contains(name)) return;
+        request.Headers.TryAddWithoutValidation(name, value);
     }
 }
