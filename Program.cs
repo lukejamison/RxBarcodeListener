@@ -35,7 +35,11 @@ static class Program
         using var _ = SentrySdk.Init(options =>
         {
             options.Dsn = Config.SentryDsn;
-            options.Environment = "production";
+            // Environment is deliberately the machine name rather than a fixed "production" —
+            // this pharmacy runs the same build on several POS computers, and tagging errors
+            // and Sentry Crons check-ins (see Heartbeat.cs) by machine is what lets a "down"
+            // alert say WHICH computer is down instead of lumping all of them together.
+            options.Environment = Environment.MachineName;
             options.TracesSampleRate = 0;
             options.AutoSessionTracking = false;
             options.Release = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString();
