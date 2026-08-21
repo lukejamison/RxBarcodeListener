@@ -1,0 +1,12 @@
+Add Sentry heartbeat monitoring and harden auto-restart reliability
+
+- Add Heartbeat.cs: periodic Sentry Crons check-in so a missed
+  heartbeat (crash, PC off, hung process) triggers an alert even
+  though a dead process can't report its own death
+- Re-register the scheduled task with current settings on every
+  startup so already-deployed PCs pick up Task Scheduler tuning
+  after an auto-update, not just on fresh installs
+- Harden scheduled task settings (StartWhenAvailable,
+  AllowStartIfOnBatteries, DontStopIfGoingOnBatteries)
+- Pin Sentry package to the exact tested version (was silently
+  floating from 5.0.0 to 6.4.0)

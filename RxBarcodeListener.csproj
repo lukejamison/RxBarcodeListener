@@ -12,14 +12,17 @@
     <RootNamespace>RxBarcodeListener</RootNamespace>
     <Company>Luke Jamison</Company>
     <Authors>Luke Jamison</Authors>
-    <Version>1.0.9</Version>
-    <AssemblyVersion>1.0.9.0</AssemblyVersion>
-    <FileVersion>1.0.9.0</FileVersion>
+    <Version>1.0.10</Version>
+    <AssemblyVersion>1.0.10.0</AssemblyVersion>
+    <FileVersion>1.0.10.0</FileVersion>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
-    <PackageReference Include="Sentry" Version="5.0.0" />
+    <!-- Pinned exactly (not "5.0.0", which NuGet treats as a MINIMUM bound and had
+         silently floated up to 6.4.0) so a fresh restore can't pull in an untested
+         major version on a POS machine. -->
+    <PackageReference Include="Sentry" Version="[6.4.0]" />
   </ItemGroup>
 
   <ItemGroup>

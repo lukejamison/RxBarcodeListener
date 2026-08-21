@@ -28,6 +28,29 @@ static class Installer
         string.Equals(CurrentExe, InstallExe, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
+    /// Re-registers the Task Scheduler entry with the CURRENT settings every startup
+    /// (Register-ScheduledTask -Force is an idempotent overwrite). Without this, a PC that
+    /// was installed before a Task Scheduler setting changed (e.g. -StartWhenAvailable,
+    /// -AllowStartIfOnBatteries) would keep running with the OLD settings forever, since
+    /// self-updates replace the exe but never re-run the one-time installer. This also
+    /// self-heals if someone manually deletes/breaks the scheduled task.
+    /// Call once at startup, on an already-installed instance. Never throws.
+    /// </summary>
+    public static void EnsureScheduledTaskUpToDate()
+    {
+        if (!IsInstalled) return;
+
+        try
+        {
+            RegisterScheduledTask();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError("Installer: failed to refresh scheduled task settings", ex);
+        }
+    }
+
+    /// <summary>
     /// Call at startup. If the exe is not running from the install location, prompts the
     /// user to install and returns true (the caller should immediately return/exit).
     /// Returns false when already running from the install location — no action taken.
@@ -107,7 +130,7 @@ static class Installer
         var script = $$"""
             $action    = New-ScheduledTaskAction -Execute '{{InstallExe.Replace("'", "''")}}'
             $trigger   = New-ScheduledTaskTrigger -AtLogOn -User '{{user.Replace("'", "''")}}'
-            $settings  = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Seconds 0) -MultipleInstances IgnoreNew -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
+            $settings  = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Seconds 0) -MultipleInstances IgnoreNew -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
             $principal = New-ScheduledTaskPrincipal -UserId '{{user.Replace("'", "''")}}' -LogonType Interactive -RunLevel Highest
             Register-ScheduledTask -TaskName 'RxBarcodeListener' -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
             """;

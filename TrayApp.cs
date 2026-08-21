@@ -50,6 +50,9 @@ public class TrayApp : ApplicationContext
 
         InitializeTrayIcon();
         InitializeHook();
+        Heartbeat.Start();
+        // Fire-and-forget: shells out to powershell.exe, no need to block tray startup on it.
+        _ = Task.Run(Installer.EnsureScheduledTaskUpToDate);
         Current = this;
 
         // When the machine wakes from sleep, Windows invalidates low-level keyboard hooks.
@@ -433,6 +436,7 @@ public class TrayApp : ApplicationContext
     public void Shutdown()
     {
         Logger.Log("Application exiting");
+        Heartbeat.Stop();
         _hook?.Uninstall();
         SystemEvents.PowerModeChanged -= OnPowerModeChanged;
         _trayIcon.Visible = false;
