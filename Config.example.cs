@@ -60,4 +60,8 @@ public static class Config
     public const string UpdateBaseUrl = "http://172.18.129.154/bpapps/RxBarcodeListener";
     // Optional SMB fallback if you expose the folder as a Windows share:
     public const string UpdateSharePath = "";
+
+    // Heartbeat — internal uptime API (see Heartbeat.cs)
+    public const string HeartbeatUrl = "http://172.18.129.154:3200/v1/heartbeat";
+    public const string HeartBeatAPIKEY = "REPLACE_ME";
 }
