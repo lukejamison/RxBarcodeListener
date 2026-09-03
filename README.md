@@ -21,6 +21,35 @@ service-fee line) so the cashier never has to leave the POS software.
 2. Copy `.env.example` → `.env` and fill in real values (gitignored).
 3. `dotnet build -c Release`
 
+## Where the exe ends up
+
+Build output is redirected outside the repo (see `Directory.Build.props`) so Google
+Drive sync cannot lock files during incremental builds.
+
+**After `dotnet build -c Release`**
+
+```
+%LOCALAPPDATA%\RxBarcodeListener-build\bin\Release\net8.0-windows\RxBarcodeListener.exe
+```
+
+Examples on POS workstations:
+
+- `C:\Users\Install\AppData\Local\RxBarcodeListener-build\bin\Release\net8.0-windows\RxBarcodeListener.exe`
+- `C:\Users\Pioneer\AppData\Local\RxBarcodeListener-build\bin\Release\net8.0-windows\RxBarcodeListener.exe`
+
+**After first-run install** (when the exe is launched from Downloads or elsewhere)
+
+The app copies itself to:
+
+```
+%LOCALAPPDATA%\RxBarcodeListener\RxBarcodeListener.exe
+```
+
+Examples:
+
+- `C:\Users\Install\AppData\Local\RxBarcodeListener\RxBarcodeListener.exe`
+- `C:\Users\Pioneer\AppData\Local\RxBarcodeListener\RxBarcodeListener.exe`
+
 ## Notes
 
 - Secrets never leave your machine — `Config.cs`, `.env`, and this repo's build/deploy
