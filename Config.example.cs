@@ -20,6 +20,10 @@ public static class Config
     public const string PioneerRxEmployeeId = "REPLACE_ME";
     public const string CaliforniaMedicaidPayMethod = "California Medicaid";
 
+    // POS Universal RxQuery (Vendor-Key / Data-Exchange-ID headers)
+    public const string PosVendorKey = "REPLACE_ME";
+    public const string PosDataExchangeId = "REPLACE_ME";
+
     public const string MarginFeeUpc = "490000002324";
     public const decimal MarginFeeThreshold = 3.00m;
 
@@ -48,7 +52,7 @@ public static class Config
 
     public const int BufferTimeoutMs = 500;
     public const string SentryDsn = "REPLACE_ME";
-    public const int ToastDurationMs = 12000;
+    public const int ToastDurationMs = 4000;
 
     public static readonly string LogFilePath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),

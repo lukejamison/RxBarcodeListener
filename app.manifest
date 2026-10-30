@@ -3,15 +3,19 @@
   <assemblyIdentity version="1.0.0.0" name="RxBarcodeListener" />
 
   <!--
-    requireAdministrator: The app requests elevation on launch.
-    This is required for WH_KEYBOARD_LL to capture keystrokes when any
-    elevated process (e.g. PioneerRx) has focus. Without this, Windows
-    silently blocks the hook from receiving input from elevated windows.
+    asInvoker: the app runs with the same rights as whoever starts it. It does NOT
+    request administrator elevation, so a standard Windows user (the daily Pioneer user)
+    can reopen it from the desktop shortcut or Start Menu with no UAC prompt/password.
+
+    This only works while PioneerRx itself is NOT running as administrator. Windows
+    blocks a normal-rights keyboard hook from seeing keystrokes in an elevated window.
+    If PioneerRx is ever changed to "Run as administrator", this app would need to be
+    elevated too (requireAdministrator), and the no-password reopen would no longer work.
   -->
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v2">
     <security>
       <requestedPrivileges xmlns="urn:schemas-microsoft-com:asm.v3">
-        <requestedExecutionLevel level="requireAdministrator" uiAccess="false" />
+        <requestedExecutionLevel level="asInvoker" uiAccess="false" />
       </requestedPrivileges>
     </security>
   </trustInfo>

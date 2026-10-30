@@ -12,31 +12,37 @@ namespace RxBarcodeListener;
 ///
 ///   3. SOC fee alert — fires when a fee line was auto-injected because the fill was
 ///      underpaid (acquisitionCost - totalPricePaid) by more than Config.MarginFeeThreshold.
-///      Never fires for a profitable/break-even fill. Shown at the bottom-right corner
-///      so it never overlaps the other two.
+///      Never fires for a profitable/break-even fill. Stacked under the Will-Call toast.
+///
+///   4. Will-Call alert — fires when RxQuery finds other ready prescriptions for the
+///      same patient. Shown at a fixed spot, with the SOC toast directly underneath.
 ///
 /// Shared design:
 /// - Dark background (#1a1a2e), always on top, no taskbar entry, no caption bar
 /// - Auto-dismisses after Config.ToastDurationMs milliseconds
-/// - Click anywhere to dismiss
+/// - Click anywhere, or press any key, to dismiss
+/// - Shown without taking focus, so typing continues into PioneerRx
 /// </summary>
 public class ToastWindow : Form
 {
-    private enum ToastKind { Nimble, ThirdParty, MarginFee }
+    private enum ToastKind { Nimble, ThirdParty, MarginFee, WillCall }
 
     private readonly NimbleRxResult?   _result;
     private readonly PioneerRxResult?  _thirdPartyResult;
     private readonly RxMarginResult?   _marginResult;
+    private readonly ReadyRxAlert?     _willCallAlert;
     private System.Windows.Forms.Timer _dismissTimer = null!;
 
     // Separate trackers so each alert type manages its own lifecycle independently.
     private static ToastWindow? _current;             // NimbleRx alert
     private static ToastWindow? _currentThirdParty;   // California Medicaid alert
     private static ToastWindow? _currentMarginFee;    // Margin fee alert
+    private static ToastWindow? _currentWillCall;     // Other ready Rx alert
 
     private const int NimbleToastHeight     = 265;
     private const int ThirdPartyToastHeight = 210;
     private const int MarginFeeToastHeight  = 210;
+    private const int WillCallToastHeight   = 180;
 
     private ToastWindow(NimbleRxResult result)
     {
@@ -59,6 +65,14 @@ public class ToastWindow : Form
         _marginResult = result;
         SetupWindow(MarginFeeToastHeight, ToastKind.MarginFee);
         BuildMarginFeeLayout();
+        StartDismissTimer();
+    }
+
+    private ToastWindow(ReadyRxAlert alert)
+    {
+        _willCallAlert = alert;
+        SetupWindow(WillCallToastHeight, ToastKind.WillCall);
+        BuildWillCallLayout();
         StartDismissTimer();
     }
 
@@ -89,7 +103,7 @@ public class ToastWindow : Form
 
     /// <summary>
     /// Show a margin fee toast, closing any previous margin fee toast still on screen.
-    /// Positioned bottom-right so it never overlaps the NimbleRx/Medicaid slots.
+    /// Stacked directly under the Will-Call toast.
     /// Must be called on the UI thread.
     /// </summary>
     public static void ShowMarginFeeToast(RxMarginResult result)
@@ -97,6 +111,19 @@ public class ToastWindow : Form
         _currentMarginFee?.Close();
         var toast = new ToastWindow(result);
         _currentMarginFee = toast;
+        toast.Show();
+    }
+
+    /// <summary>
+    /// Show a Will-Call toast when this patient has other prescriptions already ready.
+    /// Shown at a fixed screen position, with the SOC toast stacked underneath.
+    /// Must be called on the UI thread.
+    /// </summary>
+    public static void ShowWillCallToast(ReadyRxAlert alert)
+    {
+        _currentWillCall?.Close();
+        var toast = new ToastWindow(alert);
+        _currentWillCall = toast;
         toast.Show();
     }
 
@@ -118,21 +145,27 @@ public class ToastWindow : Form
         // unwatched screen is as good as no toast at all.
         var screen = Screen.FromPoint(Cursor.Position).WorkingArea;
 
-        if (kind == ToastKind.MarginFee)
+        if (kind is ToastKind.WillCall or ToastKind.MarginFee)
         {
-            // Bottom-right corner — never overlaps the bottom-left NimbleRx/Medicaid stack.
-            Left = screen.Right - Width - 20;
-            Top  = screen.Bottom - height - 20;
+            // Other-ready Rx sits at the requested spot; the SOC toast stacks directly under it.
+            const int stackLeft = 974;
+            const int stackTop  = 284;
+            const int stackGap  = 12;
+            Left = stackLeft;
+            Top  = kind == ToastKind.WillCall
+                ? stackTop
+                : stackTop + WillCallToastHeight + stackGap;
         }
         else
         {
             Left = screen.Left + 20;
 
             // NimbleRx toast sits at the very bottom-left.
-            // California Medicaid toast sits directly above that slot so they don't overlap.
+            // California Medicaid toast sits directly above that slot.
             Top = kind == ToastKind.ThirdParty
                 ? screen.Bottom - NimbleToastHeight - height - 30
                 : screen.Bottom - height - 20;
+            Top = Math.Max(screen.Top + 20, Top);
         }
 
         Click += (_, _) => Close();
@@ -194,7 +227,7 @@ public class ToastWindow : Form
         }
 
         // Dismiss hint
-        AddLabel("Click anywhere to dismiss",
+        AddLabel("Click or press any key to dismiss",
             x: 20, y: 238, width: 440, height: 18, fontSize: 9,
             color: UiTheme.TextDim);
     }
@@ -227,7 +260,7 @@ public class ToastWindow : Form
             color: UiTheme.TextMuted);
 
         // Dismiss hint
-        AddLabel("Click anywhere to dismiss",
+        AddLabel("Click or press any key to dismiss",
             x: 20, y: 182, width: 440, height: 18, fontSize: 9,
             color: UiTheme.TextDim);
     }
@@ -261,8 +294,30 @@ public class ToastWindow : Form
             color: UiTheme.TextMuted);
 
         // Dismiss hint
-        AddLabel("Click anywhere to dismiss",
+        AddLabel("Click or press any key to dismiss",
             x: 20, y: 182, width: 440, height: 18, fontSize: 9,
+            color: UiTheme.TextDim);
+    }
+
+    private void BuildWillCallLayout()
+    {
+        var count = _willCallAlert!.OtherReadyCount;
+        var noun  = count == 1 ? "prescription" : "prescriptions";
+
+        AddLabel("Already in Will-Call",
+            x: 20, y: 16, width: 440, height: 26, fontSize: 13, bold: true,
+            color: UiTheme.AccentAmber);
+
+        AddLabel(_willCallAlert.PatientName,
+            x: 20, y: 48, width: 440, height: 48, fontSize: 20, bold: true,
+            color: Color.White);
+
+        AddLabel($"{count} more {noun} ready",
+            x: 20, y: 104, width: 440, height: 24, fontSize: 13,
+            color: UiTheme.AccentAmber);
+
+        AddLabel("Click or press any key to dismiss",
+            x: 20, y: 148, width: 440, height: 18, fontSize: 9,
             color: UiTheme.TextDim);
     }
 
@@ -325,6 +380,32 @@ public class ToastWindow : Form
         Controls.Add(label);
     }
 
+    // Toasts appear while the cashier is typing/scanning in PioneerRx. Never take focus, so
+    // the key press that dismisses a toast still goes to the POS instead of being swallowed.
+    protected override bool ShowWithoutActivation => true;
+
+    private readonly long _shownAtMs = Environment.TickCount64;
+
+    // Ignore key presses for a moment after a toast appears so trailing scanner keystrokes
+    // from the very scan that triggered it can't dismiss it before anyone sees it.
+    private const int DismissGraceMs = 500;
+
+    /// <summary>
+    /// Dismisses every toast currently on screen (called on any real key press).
+    /// Safe to call from the keyboard hook: closing is queued onto the UI thread.
+    /// </summary>
+    public static void DismissAll()
+    {
+        foreach (var toast in new[] { _current, _currentThirdParty, _currentMarginFee, _currentWillCall })
+        {
+            if (toast == null || toast.IsDisposed || !toast.IsHandleCreated) continue;
+            if (Environment.TickCount64 - toast._shownAtMs < DismissGraceMs) continue;
+
+            try { toast.BeginInvoke(new Action(toast.Close)); }
+            catch (Exception ex) { Logger.Log($"Toast dismiss-on-key skipped: {ex.Message}"); }
+        }
+    }
+
     private void StartDismissTimer()
     {
         _dismissTimer = new System.Windows.Forms.Timer { Interval = Config.ToastDurationMs };
@@ -343,6 +424,7 @@ public class ToastWindow : Form
         if (_current == this)             _current = null;
         if (_currentThirdParty == this)   _currentThirdParty = null;
         if (_currentMarginFee == this)    _currentMarginFee = null;
+        if (_currentWillCall == this)     _currentWillCall = null;
         base.OnFormClosed(e);
     }
 }

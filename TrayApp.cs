@@ -51,8 +51,6 @@ public class TrayApp : ApplicationContext
         InitializeTrayIcon();
         InitializeHook();
         Heartbeat.Start();
-        // Fire-and-forget: shells out to powershell.exe, no need to block tray startup on it.
-        _ = Task.Run(Installer.EnsureScheduledTaskUpToDate);
         Current = this;
 
         // When the machine wakes from sleep, Windows invalidates low-level keyboard hooks.
@@ -66,8 +64,11 @@ public class TrayApp : ApplicationContext
             tipIcon:  ToolTipIcon.Info
         );
 
-        // Check for updates in the background — never blocks startup
+        // Check for updates soon after startup, then every 4 hours (auto-install when found).
         _ = CheckForUpdateAsync();
+        var updateTimer = new System.Windows.Forms.Timer { Interval = 4 * 60 * 60 * 1000 };
+        updateTimer.Tick += (_, _) => _ = CheckForUpdateAsync();
+        updateTimer.Start();
     }
 
     private void InitializeTrayIcon()
@@ -166,8 +167,9 @@ public class TrayApp : ApplicationContext
         };
         menu.Items.Add(debugItem);
 
-        menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("Exit", null, (s, e) => Shutdown());
+        // No Exit here on purpose — cashiers shouldn't stop barcode monitoring from the
+        // tray. Task Scheduler auto-restarts unexpected exits; use Diagnostics > Restart,
+        // or the desktop shortcut, if something needs a nudge.
 
         return menu;
     }
@@ -175,7 +177,7 @@ public class TrayApp : ApplicationContext
     private void InitializeHook()
     {
         _processor = new BarcodeProcessor(OnBarcodeDetected, OnBagDetected);
-        _hook      = new KeyboardHook(_processor.ProcessKey);
+        _hook      = new KeyboardHook(_processor.ProcessKey, ToastWindow.DismissAll);
         _hook.Install();
         Logger.Log("Keyboard hook installed");
     }
@@ -214,6 +216,7 @@ public class TrayApp : ApplicationContext
         // tray menu — NimbleRx/California Medicaid checks are unrelated and always run.
         var nimbleTask  = NimbleRxClient.LookupAsync(rxNumber);
         var pioneerTask = PioneerRxClient.LookupAsync(rxNumber);
+        var readyTask   = PosRxQueryClient.GetOtherReadyAsync(rxNumber);
         var socEnabled  = Settings.AutoSocAddEnabled;
         var marginTask  = socEnabled ? PioneerRxClient.CheckMarginAsync(rxNumber) : Task.FromResult<RxMarginResult?>(null);
 
@@ -257,6 +260,27 @@ public class TrayApp : ApplicationContext
         else
         {
             Logger.Log($"Rx {rxNumber} — no California Medicaid billing detected");
+        }
+
+        // --- Other ready prescriptions (Will-Call) ---
+        ReadyRxAlert? readyAlert = null;
+        try
+        {
+            readyAlert = readyTask.GetAwaiter().GetResult();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError($"RxQuery lookup failed for Rx {rxNumber}", ex);
+        }
+
+        if (readyAlert != null)
+        {
+            Logger.Log($"Rx {rxNumber} — {readyAlert.PatientName} has {readyAlert.OtherReadyCount} other ready prescription(s)");
+            InvokeSafely(() => ToastWindow.ShowWillCallToast(readyAlert));
+        }
+        else
+        {
+            Logger.Log($"Rx {rxNumber} — no other ready prescriptions");
         }
 
         // --- Margin fee check (Auto SOC Add) ---
@@ -382,47 +406,44 @@ public class TrayApp : ApplicationContext
     }
 
     /// <summary>
-    /// Checks the network share for a newer version. If found, adds an update
-    /// item to the top of the tray menu and shows a balloon tip.
-    /// Runs entirely in the background; marshals UI changes to the UI thread.
+    /// Checks the update server for a newer version. When one exists, downloads and
+    /// installs automatically so POS machines don't sit on old builds waiting for someone
+    /// to click the tray menu.
     /// </summary>
     private async Task CheckForUpdateAsync()
     {
-        // Short delay so the hook and UI are fully settled before hitting the share
+        // Short delay so the hook and UI are fully settled before hitting the network
         await Task.Delay(TimeSpan.FromSeconds(6)).ConfigureAwait(false);
 
         var update = await Updater.CheckForUpdateAsync().ConfigureAwait(false);
         if (update == null) return;
 
+        Logger.Log($"Updater: auto-installing v{update.VersionString}");
+
         InvokeSafely(() =>
         {
-            var updateItem = new ToolStripMenuItem($"Install Update (v{update.VersionString})")
-            {
-                ForeColor = UiTheme.AccentGreen,
-                Font      = UpdateMenuFont
-            };
-            updateItem.Click += (_, _) =>
-            {
-                _trayIcon.ShowBalloonTip(
-                    timeout:  4000,
-                    tipTitle: "Updating…",
-                    tipText:  $"Downloading v{update.VersionString} — the app will restart automatically when it's ready.",
-                    tipIcon:  ToolTipIcon.Info
-                );
-                Updater.InstallUpdate(update);
-            };
-
-            var menu = _trayIcon.ContextMenuStrip!;
-            menu.Items.Insert(0, new ToolStripSeparator());
-            menu.Items.Insert(0, updateItem);
-
             _trayIcon.ShowBalloonTip(
                 timeout:  8000,
-                tipTitle: "Update Available",
-                tipText:  $"RxBarcodeListener v{update.VersionString} is ready. Right-click the tray icon to install.",
+                tipTitle: "Updating RxBarcodeListener",
+                tipText:  $"Installing v{update.VersionString}. Scanning will pause briefly, then restart automatically.",
                 tipIcon:  ToolTipIcon.Info
             );
+            Updater.InstallUpdate(update);
         });
+    }
+
+    /// <summary>
+    /// Why the process is ending. Task Scheduler treats exit code 0 as "success" (no
+    /// auto-restart) and non-zero as "failed" (RestartCount/RestartInterval kick in).
+    /// </summary>
+    public enum ShutdownReason
+    {
+        /// <summary>Unexpected stop or crash recovery — scheduler should restart ~1 min.</summary>
+        Exit,
+        /// <summary>Updater script is replacing the exe and will relaunch itself.</summary>
+        Update,
+        /// <summary>Diagnostics restart helper will relaunch via scheduled task.</summary>
+        Restart,
     }
 
     /// <summary>
@@ -433,9 +454,9 @@ public class TrayApp : ApplicationContext
     /// user hovers over it. Public so DiagnosticsWindow and Updater can route through it
     /// via <see cref="Current"/> instead of duplicating the cleanup or bypassing it.
     /// </summary>
-    public void Shutdown()
+    public void Shutdown(ShutdownReason reason = ShutdownReason.Exit)
     {
-        Logger.Log("Application exiting");
+        Logger.Log($"Application exiting (reason: {reason})");
         Heartbeat.Stop();
         _hook?.Uninstall();
         SystemEvents.PowerModeChanged -= OnPowerModeChanged;
@@ -444,6 +465,10 @@ public class TrayApp : ApplicationContext
         if (!ReferenceEquals(AppIcon, SystemIcons.Application))
             AppIcon.Dispose();
         _uiInvoker.Dispose();
-        Application.Exit();
+
+        // Environment.Exit (not Application.Exit) so Task Scheduler sees a non-zero code
+        // for ordinary shutdowns and restarts the app within RestartInterval (1 min).
+        var exitCode = reason is ShutdownReason.Update or ShutdownReason.Restart ? 0 : 1;
+        Environment.Exit(exitCode);
     }
 }

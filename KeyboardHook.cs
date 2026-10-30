@@ -40,10 +40,20 @@ public class KeyboardHook
     private readonly LowLevelKeyboardProc _proc;
     private IntPtr _hookId = IntPtr.Zero;
     private readonly Action<char> _onKey;
+    private readonly Action? _onAnyKeyDown;
 
-    public KeyboardHook(Action<char> onKey)
+    private const int WM_SYSKEYDOWN = 0x0104;
+    // KBDLLHOOKSTRUCT.flags bit set when the key event was synthesized (SendInput),
+    // e.g. our own SOC fee-line injection - those must not count as the user pressing a key.
+    private const int LLKHF_INJECTED = 0x10;
+
+    /// <param name="onKey">Receives digits/letters/Enter for barcode detection.</param>
+    /// <param name="onAnyKeyDown">Optional. Called for every real (non-injected) key press,
+    /// e.g. to dismiss on-screen toasts. Runs on the hook thread - keep it fast.</param>
+    public KeyboardHook(Action<char> onKey, Action? onAnyKeyDown = null)
     {
         _onKey = onKey;
+        _onAnyKeyDown = onAnyKeyDown;
         _proc = HookCallback;
     }
 
@@ -79,6 +89,14 @@ public class KeyboardHook
     {
         try
         {
+            if (nCode >= 0 && _onAnyKeyDown != null &&
+                (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN))
+            {
+                var flags = Marshal.ReadInt32(lParam, 8);
+                if ((flags & LLKHF_INJECTED) == 0)
+                    _onAnyKeyDown();
+            }
+
             if (nCode >= 0 && wParam == WM_KEYDOWN)
             {
                 int vkCode = Marshal.ReadInt32(lParam);

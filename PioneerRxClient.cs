@@ -298,23 +298,35 @@ public static class PioneerRxClient
     /// </summary>
     private static async Task<string?> PostAsync(string jsonBody)
     {
-        var timestamp = FormatTimestamp();
-        var signature = ComputeSignature(timestamp);
-
-        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/enterprise/method/process");
-        request.Headers.Add("prx-timestamp", timestamp);
-        request.Headers.Add("prx-signature",  signature);
-        request.Content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
-
-        var response = await Http.SendAsync(request);
-
-        if (!response.IsSuccessStatusCode)
+        // A scan fires several PioneerRx calls at once. Each one gets its own unique
+        // timestamp (see FormatTimestamp), but if the server still answers 401 - for example
+        // a clock/replay hiccup - retry once with a fresh timestamp + signature before
+        // giving up, so a transient rejection doesn't silently skip the SOC margin check.
+        for (var attempt = 1; ; attempt++)
         {
+            var timestamp = FormatTimestamp();
+            var signature = ComputeSignature(timestamp);
+
+            using var request = new HttpRequestMessage(HttpMethod.Post, "/api/enterprise/method/process");
+            request.Headers.Add("prx-timestamp", timestamp);
+            request.Headers.Add("prx-signature",  signature);
+            request.Content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
+
+            using var response = await Http.SendAsync(request);
+
+            if (response.IsSuccessStatusCode)
+                return await response.Content.ReadAsStringAsync();
+
+            if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized && attempt == 1)
+            {
+                Logger.Log("PioneerRx API returned 401 - retrying once with a fresh timestamp");
+                await Task.Delay(200);
+                continue;
+            }
+
             Logger.Log($"PioneerRx API returned {(int)response.StatusCode}");
             return null;
         }
-
-        return await response.Content.ReadAsStringAsync();
     }
 
     /// <summary>
@@ -346,10 +358,26 @@ public static class PioneerRxClient
     /// </summary>
     private static string FormatTimestamp()
     {
-        var now    = DateTime.UtcNow;
+        DateTime now;
+        lock (TimestampLock)
+        {
+            now = DateTime.UtcNow;
+            // Truncate to whole milliseconds, then force each timestamp to be at least 1 ms
+            // after the previous one. Concurrent requests in the same millisecond would
+            // otherwise share an identical timestamp (and therefore signature), which the
+            // server can reject as a replay.
+            now = new DateTime(now.Ticks - (now.Ticks % TimeSpan.TicksPerMillisecond), DateTimeKind.Utc);
+            if (now <= _lastTimestamp)
+                now = _lastTimestamp.AddMilliseconds(1);
+            _lastTimestamp = now;
+        }
+
         var micros = (now.Millisecond * 1000).ToString("D6");
         return $"{now:yyyy-MM-ddTHH:mm:ss}.{micros}Z";
     }
+
+    private static readonly object TimestampLock = new();
+    private static DateTime _lastTimestamp = DateTime.MinValue;
 
     /// <summary>
     /// signature = Base64( SHA-512( UTF-16LE( timestamp + sharedSecret ) ) )

@@ -251,25 +251,19 @@ public class DiagnosticsWindow : Form
 
         try
         {
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-            {
-                FileName        = Environment.ProcessPath!,
-                UseShellExecute = true,
-            });
+            // Relaunch via Task Scheduler (no UAC) once this process has fully exited.
+            Launcher.ScheduleRelaunchAfterCurrentProcessExit();
         }
         catch (Exception ex)
         {
-            Logger.LogError("Diagnostics: failed to relaunch for manual restart", ex);
+            Logger.LogError("Diagnostics: failed to schedule relaunch for manual restart", ex);
             MessageBox.Show(this, $"Couldn't restart automatically:\n\n{ex.Message}",
                 "RxBarcodeListener — Restart Failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return;
         }
 
-        // Route through TrayApp.Shutdown() (hides the tray icon, uninstalls the keyboard
-        // hook) rather than calling Application.Exit() directly — otherwise the tray icon
-        // is left behind as a "ghost" until the user hovers over the notification area.
-        if (TrayApp.Current != null) TrayApp.Current.Shutdown();
-        else Application.Exit();
+        if (TrayApp.Current != null) TrayApp.Current.Shutdown(TrayApp.ShutdownReason.Restart);
+        else Environment.Exit(0);
     }
 
     private async Task SendReportAsync()
